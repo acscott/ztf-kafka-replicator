@@ -1,5 +1,6 @@
 import sys
 import logging
+import datetime
 import argparse
 import time
 import multiprocessing as mp
@@ -39,6 +40,10 @@ def offset_diff(source, src_groupid, target, trg_groupid):
     tmax = len(trg_topics)
     endofs = False
     endoft = False
+    print(datetime.datetime.now().isoformat())
+    print(source.ljust(w) + ' | ' + target.ljust(w))
+    print(src_groupid.ljust(w) + ' | ' + trg_groupid.ljust(w))
+    print('-' * w + '---' + '-' * w)
     while True:
         if sndx < smax:
             s = src_topics[sndx]
@@ -55,18 +60,43 @@ def offset_diff(source, src_groupid, target, trg_groupid):
         if endofs and endoft: break
 
         if t < s and not endoft:
-            print(''.ljust(w) + ' | ' + t[0:w].ljust(w))
+            offset_sum = get_topic_offset_sum(t, trg)
+            print(''.ljust(w) + ' | ' + (t[0:w] + ':' + offset_sum).ljust(w))
             tndx += 1
         elif t == s:
-            print(s[1:w].ljust(w) + ' | ' + t[0:w].ljust(w))
+            t_offset_sum = get_topic_offset_sum(t, trg)
+            s_offset_sum = get_topic_offset_sum(s, src)
+            t_delta = s_offset_sum - t_offset_sum
+            if t_delta == "0":
+                t_delta = str("COMPLETE")
+            else:
+                t_delta = ' Δ=' + str(t_delta)
+
+            print((s[0:w] + ':' + str(s_offset_sum)).ljust(w) + ' | ' + (t[0:w] + ':' + str(t_offset_sum)).ljust(w) +
+                   t_delta)
             tndx += 1
             sndx += 1
         else:
             if not endofs:
-                print(s[1:w].ljust(40) + ' | ' + ''.ljust(w))
+                s_offset_sum = str(get_topic_offset_sum(s, src))
+                print((s[1:w] + ':' + s_offset_sum).ljust(40) + ' | ' + ''.ljust(w))
                 sndx += 1
 
 
+def get_topic_offset_sum(topic, cluster):
+    topic_offsets_sum = 0
+
+    try:
+        for part in cluster.partitions_for_topic(topic):
+            tp = TopicPartition(topic, part)
+            cluster.assign([tp])
+            end_offset = cluster.end_offsets([tp])
+            topic_offsets_sum += end_offset[list(end_offset)[0]]
+    except TypeError:
+        # The cluster has no partitions of the topic
+        return -1
+
+    return topic_offsets_sum
 
 
 if __name__ == '__main__':

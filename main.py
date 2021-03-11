@@ -1,12 +1,21 @@
 import sys
+import logging
 import argparse
 import time
 import multiprocessing as mp
-import kafka #kafka-python package
-import lz4  # Not necesssary to import lz4, but it does need to be installed for the kafka module
+import kafka # kafka-python package
+import lz4  # Not necessary to import lz4, but it does need to be installed for the kafka module
 from kafka.admin import KafkaAdminClient, NewTopic
 from kafka import KafkaConsumer, TopicPartition
 from kafka.cluster import ClusterMetadata
+
+
+logger = logging.getLogger('ztf-kafka-replicator')
+logger.setLevel(level=logging.DEBUG)
+fh = logging.StreamHandler()
+fh_formatter = logging.Formatter('%(asctime)s %(levelname)s %(lineno)d:%(filename)s(%(process)d) - %(message)s')
+fh.setFormatter(fh_formatter)
+logger.addHandler(fh)
 
 # Number of partitions to replicate to
 TARGET_PARTITION_COUNT = 32
@@ -45,16 +54,18 @@ def proc_replicate(topic, src_partition, end_offset, part_map, reset=False):
     src = kafka.KafkaConsumer(group_id=SRC_GROUP_ID,
                               bootstrap_servers=SRC_BOOTSTRAP_SERVERS,
                               auto_offset_reset='earliest',
-                              consumer_timeout_ms=300000)
-    print(f"topic: {topic} part:{src_partition}")
+                              consumer_timeout_ms=300000,
+                              enable_auto_commit=False)
+    logger.info(f"Starting process consumer topic: {topic} src_partition:{src_partition}")
     tp = TopicPartition(topic, src_partition)
     src.assign([tp])
     if reset:
-        print(f"Resetting source partition {src_partition} to beginning")
+        logger.info(f"Resetting source partition {src_partition} to beginning")
         src.seek_to_beginning(tp)
 
     trg = kafka.KafkaProducer(client_id=TRG_GROUP_ID,
-                              bootstrap_servers=TRG_BOOTSTRAP_SERVERS)
+                              bootstrap_servers=TRG_BOOTSTRAP_SERVERS,
+                              acks='all')
     trg_part_ndx = 0
     trg_part_ndx_max = len(part_map[src_partition])-1  # ex: a length of 2 has 1 as the max
 
@@ -67,6 +78,7 @@ def proc_replicate(topic, src_partition, end_offset, part_map, reset=False):
         for msg in src:
             msg_count += 1
             trg.send(topic, value=msg.value, partition=part_map[src_partition][trg_part_ndx])
+            src.commit()
             # 300 secs, we must do this if we want to ensure not to lose messages
             # learned of during testing; w/o it, messages do get produced but many, many
             # will not show up in the target cluster
@@ -79,9 +91,9 @@ def proc_replicate(topic, src_partition, end_offset, part_map, reset=False):
             if msg_count % LOG_INTERVAL == 0:
                 t1 = outputstat(t0, t1, LOG_INTERVAL, src_partition, msg.offset, msg_count, ending_offset)
     except StopIteration:
-        print(f"source partition {src_partition} no messages in 300 seconds, ending")
+        logging.error(f"source partition {src_partition} no messages in 300 seconds, ending")
 
-    print(f"source partition {src_partition:03} complete ========================")
+    logger.info(f"process consumer, source partition {src_partition} replication complete ========================")
     t1 = outputstat(t0, t1, LOG_INTERVAL, src_partition, msg.offset, msg_count, ending_offset)
 
 
@@ -120,36 +132,38 @@ def replicate(topic, reset, source, src_groupid, target, trg_groupid, trg_partit
     trg = kafka.KafkaConsumer(group_id=trg_groupid,
                               bootstrap_servers=target)
 
+    logger.info(f"source cluster: {source}  source group_id: {src_groupid}")
+    logger.info(f"target cluster: {target}  target group_id: {trg_groupid}")
     # Determine if latest source topic is at least partially loaded to target
     trg_topics, the_topic = determine_topic(topic, src, trg, reset)
 
     part_set = src.partitions_for_topic(the_topic)
     src_partition_count = len(part_set)
-    print(f"topic: {the_topic} # of partitions: {src_partition_count}")
+    logger.info(f"topic: {the_topic} # of partitions: {src_partition_count}")
     # Calculate multiplier for demuxing
     # Example:
     #    source = 4 target = 9 then multiplier is 9/4=2.25
     #    int(2.25) = 2
     multiplier = int(trg_partitions / src_partition_count)
     trg_partition_count = src_partition_count * multiplier
-    print(f"multiplier={multiplier} target_partition_count={trg_partition_count}")
+    logger.info(f"multiplier={multiplier} target_partition_count={trg_partition_count}")
 
     # Add the new topic in target cluster
     if the_topic not in trg_topics:
-        print(f"replicate {the_topic} to {TRG_BOOTSTRAP_SERVERS} with group id: {src_groupid}")
+        logger.info(f"replicate {the_topic} to {TRG_BOOTSTRAP_SERVERS} with source group id: {src_groupid}")
         admin_client = KafkaAdminClient(
             bootstrap_servers=TRG_BOOTSTRAP_SERVERS,
             client_id=TRG_GROUP_ID
         )
         topic_list = [NewTopic(name=the_topic, num_partitions=trg_partition_count, replication_factor=1)]
-        print(f"Creating topic {the_topic} with {trg_partition_count} partitions")
+        logger.info(f"Creating topic {the_topic} with {trg_partition_count} partitions")
         admin_client.create_topics(new_topics=topic_list, validate_only=False)
 
     part_map = create_part_map(src_partition_count, multiplier)
 
     # Get offset status for each partition
-    print(f"Source broker partitions for topic {the_topic}")
-    print("-------------------------------------------------------------------------")
+    logger.info(f"Source broker partitions for topic {the_topic}")
+    logger.info("-------------------------------------------------------------------------")
     parts = {}
     total_committed = 0
     total_offsets = 0
@@ -164,15 +178,15 @@ def replicate(topic, reset, source, src_groupid, target, trg_groupid, trg_partit
         end_offset = src.end_offsets([tp])
         parts[str(p)] = end_offset
         total_offsets += end_offset[tp]
-        print("Source topic: %s partition: %s end offset: %s committed: %s last: %s lag: %s" %
+        logger.info("Source topic: %s partition: %s end offset: %s committed: %s last: %s lag: %s" %
               (the_topic, p, end_offset[tp], committed, last_offset, (last_offset - committed)))
         #consumer.seek_to_beginning(tp)
 
     src.close(autocommit=False)
-    print(f"Source: total_committed={total_committed} total_offsets={total_offsets}")
-    print("=========================================================================")
+    logger.info(f"Source: total_committed={total_committed} total_offsets={total_offsets}")
+    logger.info("=========================================================================")
 
-    print(f"Starting multi-process: the_topic={the_topic} reset={reset} src_partition_count={src_partition_count}")
+    logger.info(f"Starting multi-process: the_topic={the_topic} reset={reset} src_partition_count={src_partition_count}")
     procs = [mp.Process(target=proc_replicate,
                         args=(the_topic, p, parts[str(p)], part_map, reset)
                         ) for p in range(0, src_partition_count)]
@@ -184,11 +198,17 @@ def replicate(topic, reset, source, src_groupid, target, trg_groupid, trg_partit
 
 def get_topic_offset_sum(topic, cluster):
     topic_offsets_sum = 0
-    for part in cluster.partitions_for_topic(topic):
-        tp = TopicPartition(topic, part)
-        cluster.assign([tp])
-        end_offset = cluster.end_offsets([tp])
-        topic_offsets_sum += end_offset[list(end_offset)[0]]
+
+    try:
+        for part in cluster.partitions_for_topic(topic):
+            tp = TopicPartition(topic, part)
+            cluster.assign([tp])
+            end_offset = cluster.end_offsets([tp])
+            topic_offsets_sum += end_offset[list(end_offset)[0]]
+    except TypeError:
+        # The cluster has no partitions of the topic
+        return -1
+
     return topic_offsets_sum
 
 
@@ -196,15 +216,16 @@ def determine_topic(topic, src, trg, reset):
 
     if topic:
         if not reset:
-            # is the topic in the target and is the sum of end offsets smaller than the source?
             trg_offset_sum = get_topic_offset_sum(topic, trg)
             src_offset_sum = get_topic_offset_sum(topic, src)
+            logger.info(f"trg_offset_sum={trg_offset_sum} src_offset_sum={src_offset_sum}")
+
+            # is the topic in the target and is the sum of end offsets smaller than the source?
             if trg_offset_sum < src_offset_sum:
-                the_topic=topic
+                the_topic = topic
             else:
-                print("Target sum of ending offsets of each partition is not less than the Source")
-                print(f"trg_offset_sum={trg_offset_sum} src_offset_sum={src_offset_sum}")
-                print(f"Use the reset option to reload the topic {topic}")
+                logger.info("Target sum of ending offsets of each partition is not less than the Source")
+                logger.info(f"Use the reset option to reload the topic {topic}")
                 sys.exit(0)
         else:
             the_topic = topic
@@ -222,7 +243,7 @@ def determine_topic(topic, src, trg, reset):
         # Find the latest src topic not in trg
         missing_topics = list_items_not_in(src_topics, trg_topics)
         if len(missing_topics) == 0:
-            print("No topics are missing in the target cluster, will look for incomplete topics ")
+            logger.info("No topics are missing in the target cluster, will look for incomplete topics ")
             candidate_topics = src_topics
         else:
             candidate_topics = missing_topics
@@ -236,11 +257,16 @@ def determine_topic(topic, src, trg, reset):
                 break
 
         if not the_topic:
-            print("All candidate source topics have 0 offset sums. Nothing to replicate. ")
+            logger.info("All candidate source topics have 0 offset sums. Nothing to replicate. ")
             sys.exit(0)
         else:
-            print(f"Automatic determination of topic: {the_topic} with {offset_sum} sum of ending offsets of all "
-                  "partitions")
+
+            logger.info(f"Automatic determination of topic: {the_topic} with {offset_sum} sum of ending offsets of all"
+                         " partitions")
+            trg_offset_sum = get_topic_offset_sum(the_topic, trg)
+            src_offset_sum = get_topic_offset_sum(the_topic, src)
+            logger.info(f"trg_offset_sum={trg_offset_sum} src_offset_sum={src_offset_sum} (-1 = topic does not "
+                         "exist)")
 
     return trg_topics, the_topic
 
@@ -250,13 +276,13 @@ def list_items_not_in(list1, list2):
 
 
 def print_source_topics(src_topics):
-    print("Source topics")
-    print("--------------------------------------")
+    logger.info("Source topics")
+    logger.info("--------------------------------------")
     i = 0
     for item in src_topics:
-        print(f"{i:003}:{item}")
+        logger.info(f"{i:003}:{item}")
         i = i + 1
-    print("======================================")
+    logger.info("======================================")
 
 
 if __name__ == '__main__':
@@ -277,7 +303,7 @@ if __name__ == '__main__':
     p.add_argument('-a', '--target',  default=TRG_BOOTSTRAP_SERVERS,
                    help=f"Target bootstrap server.  Defaults to {TRG_BOOTSTRAP_SERVERS} if not specified.")
     p.add_argument('-g2', '--group-id2', default=TRG_GROUP_ID,
-                   help=f"Target group id.  Defaults to {TRG_GROUP_ID} if not specified."),
+                   help=f"Target group id.  Defaults to {TRG_GROUP_ID} if not specified.")
     p.add_argument('-n', '--partitions', default=TARGET_PARTITION_COUNT,
                    help=f"Number of target partitions to use. Defaults to {TARGET_PARTITION_COUNT}. "
                         "If the source topic has 16 partitions and the target has 32 partitions, each consumer "

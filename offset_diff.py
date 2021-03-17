@@ -33,7 +33,7 @@ def offset_diff(source, src_groupid, target, trg_groupid):
     trg_topics_set = trg.topics()
     trg_topics = list(trg_topics_set)
     trg_topics.sort()
-    w = 40
+    w = 50
     sndx = 0
     smax = len(src_topics)
     tndx = 0
@@ -60,27 +60,35 @@ def offset_diff(source, src_groupid, target, trg_groupid):
         if endofs and endoft: break
 
         if t < s and not endoft:
-            offset_sum = get_topic_offset_sum(t, trg)
-            print(''.ljust(w) + ' | ' + (t[0:w] + ':' + offset_sum).ljust(w))
+            t_offset_sum = get_topic_offset_sum(t, trg)
+            print(''.ljust(w) + ' | ' + (t[0:w] + ':' + t_offset_sum).ljust(w))
             tndx += 1
         elif t == s:
             t_offset_sum = get_topic_offset_sum(t, trg)
             s_offset_sum = get_topic_offset_sum(s, src)
             t_delta = s_offset_sum - t_offset_sum
+            t_pcnt = t_offset_sum / s_offset_sum
+            t_pctn_str = "{:.2%}".format(t_pcnt)
+            s_position_sum = get_topic_position_sum(s, trg)
+            if s_position_sum == -999: s_position_sum = ''
             if t_delta == "0":
                 t_delta = str("COMPLETE")
             else:
-                t_delta = ' Δ=' + str(t_delta)
-
-            print((s[0:w] + ':' + str(s_offset_sum)).ljust(w) + ' | ' + (t[0:w] + ':' + str(t_offset_sum)).ljust(w) +
-                   t_delta)
+                t_delta = ' Δ=' + str(t_delta) + ' ' + t_pctn_str
+            s_offset_n_commit = str(s_offset_sum) + '(' + str(s_position_sum) + ')'
+            print((s[0:w] + ' ' + s_offset_n_commit).ljust(w) + ' | ' + (t[0:w] + ':' + str(t_offset_sum)).ljust(w) +
+                  t_delta)
             tndx += 1
             sndx += 1
         else:
             if not endofs:
                 s_offset_sum = str(get_topic_offset_sum(s, src))
-                print((s[1:w] + ':' + s_offset_sum).ljust(40) + ' | ' + ''.ljust(w))
+                s_position_sum = get_topic_position_sum(s, trg)
+                if s_position_sum == -999: s_position_sum = ''
+                s_offset_n_commit = str(s_offset_sum) + '(' + str(s_position_sum) + ')'
+                print((s[0:w] + ' ' + s_offset_n_commit).ljust(w) + ' | ' + ''.ljust(w))
                 sndx += 1
+    print('=' * w + '===' + '=' * w)
 
 
 def get_topic_offset_sum(topic, cluster):
@@ -97,6 +105,27 @@ def get_topic_offset_sum(topic, cluster):
         return -1
 
     return topic_offsets_sum
+
+
+def get_topic_position_sum(topic, cluster):
+    topic_position_sum = 0
+    try:
+        for part in cluster.partitions_for_topic(topic):
+            tp = TopicPartition(topic, part)
+            cluster.assign([tp])
+            c = cluster.position(tp)
+            # c is None if there are no commits for the topic partition (c is actually the offset that will be used,
+            # semantically slightly different than the number of commits)
+            if c:
+                topic_position_sum += c
+            o = cluster.committed(tp)
+            if o:
+                print('.')
+    except TypeError:
+        # The cluster has no partitions of the topic
+        return -999
+
+    return topic_position_sum
 
 
 if __name__ == '__main__':

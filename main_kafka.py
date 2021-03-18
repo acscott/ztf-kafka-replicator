@@ -1,10 +1,11 @@
 import sys
+import socket
 import logging
 import argparse
 import time
 import datetime
 import multiprocessing as mp
-import kafka # kafka-python package
+import kafka  # kafka-python package
 import lz4  # Not necessary to import lz4, but it does need to be installed for the kafka module
 from kafka.admin import KafkaAdminClient, NewTopic
 from kafka import KafkaConsumer, TopicPartition
@@ -52,7 +53,7 @@ def outputstat(t0, t1, interval, partition, offset, msg_count, ending_offset):
     return t1
 
 
-def proc_replicate(topic, src_partition, end_offset, part_map, rerun=False):
+def proc_replicate(topic, src_group_id, source, src_partition, end_offset, part_map, rerun=False):
     """
       part_map list[list[]]
     """
@@ -63,8 +64,8 @@ def proc_replicate(topic, src_partition, end_offset, part_map, rerun=False):
     #                           consumer_timeout_ms=CONSUMER_TIMEOUT,
     #                           enable_auto_commit=True)
 
-    src = kafka.KafkaConsumer(group_id=SRC_GROUP_ID,
-                              bootstrap_servers=SRC_BOOTSTRAP_SERVERS,
+    src = kafka.KafkaConsumer(group_id=src_group_id,
+                              bootstrap_servers=source,
                               auto_offset_reset='smallest',
                               consumer_timeout_ms=CONSUMER_TIMEOUT,
                               enable_auto_commit=False
@@ -146,12 +147,12 @@ def replicate(topic, rerun, delete, source, src_groupid, target, trg_groupid, tr
                               bootstrap_servers=target)
 
     admin_client = KafkaAdminClient(
-        bootstrap_servers=TRG_BOOTSTRAP_SERVERS,
-        client_id=TRG_GROUP_ID
+        bootstrap_servers=target,
+        client_id=trg_groupid
     )
 
     if delete:
-        logger.warning(f"DELETING topic {topic} on {TRG_BOOTSTRAP_SERVERS} as requested")
+        logger.warning(f"DELETING topic {topic} on {target} as requested")
         admin_client.delete_topics([topic])
         logger.warning(f"DELETION of {topic} completed.")
 
@@ -173,14 +174,14 @@ def replicate(topic, rerun, delete, source, src_groupid, target, trg_groupid, tr
 
     # Add the new topic in target cluster
     if the_topic not in trg_topics:
-        logger.info(f"replicate {the_topic} to {TRG_BOOTSTRAP_SERVERS} with source group id: {src_groupid}")
+        logger.info(f"replicate {the_topic} to {target} with source group id: {src_groupid}")
 
         topic_list = [NewTopic(name=the_topic, num_partitions=trg_partition_count, replication_factor=1)]
         try:
             logger.info(f"Creating topic {the_topic} with {trg_partition_count} partitions")
             admin_client.create_topics(new_topics=topic_list, validate_only=False)
         except kafka.errors.TopicAlreadyExistsError:
-            logger.info(f"Topic already exists in {TRG_BOOTSTRAP_SERVERS} ")
+            logger.info(f"Topic already exists in {target} ")
     part_map = create_part_map(src_partition_count, multiplier)
 
     # Get offset status for each partition
@@ -208,7 +209,7 @@ def replicate(topic, rerun, delete, source, src_groupid, target, trg_groupid, tr
 
     logger.info(f"Starting multi-process: the_topic={the_topic} rerun={rerun} src_partition_count={src_partition_count}")
     procs = [mp.Process(target=proc_replicate,
-                        args=(the_topic, part, parts[str(part)], part_map, rerun)
+                        args=(the_topic, src_groupid, source, part, parts[str(part)], part_map, rerun)
                         ) for part in range(0, src_partition_count)]
     for proc in procs:
         proc.start()
@@ -297,6 +298,12 @@ def list_items_not_in(list1, list2):
     return list(set(list1) - set(list2))
 
 
+def get_ip_address():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.connect(("8.8.8.8", 80))
+    return s.getsockname()[0]
+
+
 def print_source_topics(src_topics):
     logger.info("Source topics")
     logger.info("--------------------------------------")
@@ -337,6 +344,10 @@ if __name__ == '__main__':
 
     start_time = time.time()
     start_datetime = datetime.datetime.now().isoformat()
+    logger.info(f"Start @ {start_datetime}")
+    logger.info(f"running from {get_ip_address()}")
+    logger.info(f"topic={args.topic} rerun={args.rerun} delete={args.delete} source={args.source}")
+    logger.info(f"src_groupid={args.group_id1} target={args.target} trg_group-id={args.group_id2} partitions={args.partitions}")
     replicate(topic=args.topic,
               rerun=args.rerun,
               delete=args.delete,
@@ -349,7 +360,7 @@ if __name__ == '__main__':
     total_time = time.time() - start_time
     m, s = divmod(int(total_time), 60)
     h, m = divmod(m, 60)
-    print(f"Start @ {start_datetime}")
-    print(f"End @ {datetime.datetime.now().isoformat()}")
-    print(f"Total time " + '{:d}h:{:02d}m:{:02d}s'.format(h, m, s))
-    print(f"consumer timeout is {CONSUMER_TIMEOUT} and is included in total")
+    logger.info(f"Start @ {start_datetime}")
+    logger.info(f"End @ {datetime.datetime.now().isoformat()}")
+    logger.info(f"Total time " + '{:d}h:{:02d}m:{:02d}s'.format(h, m, s))
+    logger.info(f"consumer timeout is {CONSUMER_TIMEOUT} and is included in total")

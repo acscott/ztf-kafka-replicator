@@ -16,7 +16,7 @@ import argparse
 import time
 import datetime
 import multiprocessing as mp
-#import kafka # kafka-python package
+import kafka # kafka-python package
 import lz4  # Not necessary to import lz4, but it does need to be installed for the kafka module
 from kafka.admin import KafkaAdminClient, NewTopic
 import confluent_kafka

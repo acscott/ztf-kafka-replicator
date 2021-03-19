@@ -147,8 +147,7 @@ def replicate(topic, rerun, delete, source, src_groupid, target, trg_groupid, tr
                               bootstrap_servers=target)
 
     admin_client = KafkaAdminClient(
-        bootstrap_servers=target,
-        client_id=trg_groupid
+        bootstrap_servers=target
     )
 
     if delete:
@@ -364,3 +363,6 @@ if __name__ == '__main__':
     logger.info(f"End @ {datetime.datetime.now().isoformat()}")
     logger.info(f"Total time " + '{:d}h:{:02d}m:{:02d}s'.format(h, m, s))
     logger.info(f"consumer timeout is {CONSUMER_TIMEOUT} and is included in total")
+    logger.info(f"running from {get_ip_address()}")
+    logger.info(f"topic={args.topic} rerun={args.rerun} delete={args.delete} source={args.source}")
+    logger.info(f"src_groupid={args.group_id1} target={args.target} partitions={args.partitions}")

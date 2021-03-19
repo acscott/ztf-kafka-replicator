@@ -61,7 +61,7 @@ def offset_diff(source, src_groupid, target, trg_groupid):
 
         if t < s and not endoft:
             t_offset_sum = get_topic_offset_sum(t, trg)
-            print(''.ljust(w) + ' | ' + (t[0:w] + ':' + t_offset_sum).ljust(w))
+            print(''.ljust(w) + ' | ' + (t[0:w] + ':' + str(t_offset_sum)).ljust(w))
             tndx += 1
         elif t == s:
             t_offset_sum = get_topic_offset_sum(t, trg)

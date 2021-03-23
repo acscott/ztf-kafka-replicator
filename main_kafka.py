@@ -53,7 +53,7 @@ def outputstat(t0, t1, interval, partition, offset, msg_count, ending_offset):
     return t1
 
 
-def proc_replicate(topic, src_group_id, source, src_partition, end_offset, part_map, rerun=False):
+def proc_replicate(topic, src_group_id, source, src_partition, target, end_offset, part_map, rerun=False):
     """
       part_map list[list[]]
     """
@@ -78,7 +78,7 @@ def proc_replicate(topic, src_group_id, source, src_partition, end_offset, part_
         src.seek_to_beginning(tp)
 
     trg = kafka.KafkaProducer(client_id=TRG_GROUP_ID,
-                              bootstrap_servers=TRG_BOOTSTRAP_SERVERS,
+                              bootstrap_servers=target,
                               acks='all')
     trg_part_ndx = 0
     trg_part_ndx_max = len(part_map[src_partition])-1  # ex: a length of 2 has 1 as the max
@@ -140,12 +140,15 @@ def create_part_map(src_partition_count, multiplier):
 def replicate(topic, rerun, delete, source, src_groupid, target, trg_groupid, trg_partitions):
 
     # Connect to source kafka cluster
+    logger.info(f"Connecting source cluster {source} id {src_groupid}")
     src = kafka.KafkaConsumer(group_id=src_groupid,
                               bootstrap_servers=source)
     # Connect to target kafka cluster
+    logger.info(f"Connecting target cluster {target} id {trg_groupid}")
     trg = kafka.KafkaConsumer(group_id=trg_groupid,
                               bootstrap_servers=target)
 
+    logger.info(f"Connecting admin to target cluster {target}")
     admin_client = KafkaAdminClient(
         bootstrap_servers=target
     )
@@ -167,7 +170,7 @@ def replicate(topic, rerun, delete, source, src_groupid, target, trg_groupid, tr
     # Example:
     #    source = 4 target = 9 then multiplier is 9/4=2.25
     #    int(2.25) = 2
-    multiplier = int(trg_partitions / src_partition_count)
+    multiplier = int(int(trg_partitions) / int(src_partition_count))
     trg_partition_count = src_partition_count * multiplier
     logger.info(f"multiplier={multiplier} target_partition_count={trg_partition_count}")
 
@@ -208,8 +211,8 @@ def replicate(topic, rerun, delete, source, src_groupid, target, trg_groupid, tr
 
     logger.info(f"Starting multi-process: the_topic={the_topic} rerun={rerun} src_partition_count={src_partition_count}")
     procs = [mp.Process(target=proc_replicate,
-                        args=(the_topic, src_groupid, source, part, parts[str(part)], part_map, rerun)
-                        ) for part in range(0, src_partition_count)]
+                        args=(the_topic, src_groupid, source, source_part, target, parts[str(part)], part_map, rerun)
+                        ) for source_part in range(0, src_partition_count)]
     for proc in procs:
         proc.start()
     for proc in procs:

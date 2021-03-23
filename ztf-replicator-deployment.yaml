@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    kompose.cmd: kompose convert
+    kompose.version: 1.22.0 (955b78124)
+  creationTimestamp: null
+  labels:
+    io.kompose.service: ztf-replicator
+  name: ztf-replicator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      io.kompose.service: ztf-replicator
+  strategy: {}
+  template:
+    metadata:
+      annotations:
+        kompose.cmd: kompose convert
+        kompose.version: 1.22.0 (955b78124)
+      creationTimestamp: null
+      labels:
+        io.kompose.service: ztf-replicator
+    spec:
+      containers:
+        - args:
+            - python
+            - main_kafka.py
+            - -t
+            - ztf_20210317_public1
+            - -s
+            - public.alerts.ztf.uw.edu:9092
+            - --target
+            - kafka-junction-kafka-bootstrap:9092
+            - -g1
+            - antares_junction
+            - -n
+            - "32"
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          image: acscott/ztf-repl:latest
+          name: ztf-replicator
+          resources: {}
+      restartPolicy: Always
+status: {}
